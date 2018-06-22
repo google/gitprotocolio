@@ -11,7 +11,7 @@ This is not an official Google product (i.e. a 20% project).
 Git protocol is defined in
 [Documentation/technical/pack-protocol.txt](https://git.kernel.org/pub/scm/git/git.git/tree/Documentation/technical/pack-protocol.txt).
 This is not a complete definition. Also, a transport specific spec
-[Documentation/technical/http--protocol.txt](https://git.kernel.org/pub/scm/git/git.git/tree/Documentation/technical/http-protocol.txt)
+[Documentation/technical/http-protocol.txt](https://git.kernel.org/pub/scm/git/git.git/tree/Documentation/technical/http-protocol.txt)
 is not complete. This project was started so that these upstream protocol spec
 becomes more accurate. To verify the written syntax is accurate, this project
 includes a Git protocol parser written in Go, and have end-to-end test suites.
