@@ -32,7 +32,7 @@ const (
 	protocolV1ReceivePackRequestStateScanCert
 	protocolV1ReceivePackRequestStateScanCertVersion
 	protocolV1ReceivePackRequestStateScanCertPusher
-	protocolV1ReceivePackRequestStateScanCertPushee
+	protocolV1ReceivePackRequestStateScanCertPusheeOrNonce
 	protocolV1ReceivePackRequestStateScanCertNonce
 	protocolV1ReceivePackRequestStateScanOptionalCertPushOptions
 	protocolV1ReceivePackRequestStateScanCertCommand
@@ -75,11 +75,11 @@ func (c *ProtocolV1ReceivePackRequestChunk) EncodeToPktLine() []byte {
 	if c.ClientShallow != "" {
 		return BytesPacket([]byte(fmt.Sprintf("shallow %s\n", c.ClientShallow))).EncodeToPktLine()
 	}
-	if len(c.Capabilities) != 0 {
-		return BytesPacket([]byte(fmt.Sprintf("%s %s %s\x00%s\n", c.OldObjectID, c.NewObjectID, c.RefName, strings.Join(c.Capabilities, " ")))).EncodeToPktLine()
-	}
 	if c.OldObjectID != "" && c.NewObjectID != "" && c.RefName != "" {
-		return BytesPacket([]byte(fmt.Sprintf("%s %s %s", c.OldObjectID, c.NewObjectID, c.RefName))).EncodeToPktLine()
+		if len(c.Capabilities) != 0 {
+			return BytesPacket([]byte(fmt.Sprintf("%s %s %s\x00%s\n", c.OldObjectID, c.NewObjectID, c.RefName, strings.Join(c.Capabilities, " ")))).EncodeToPktLine()
+		}
+		return BytesPacket([]byte(fmt.Sprintf("%s %s %s\n", c.OldObjectID, c.NewObjectID, c.RefName))).EncodeToPktLine()
 	}
 	if c.EndOfCommands {
 		return FlushPacket{}.EncodeToPktLine()
@@ -89,6 +89,33 @@ func (c *ProtocolV1ReceivePackRequestChunk) EncodeToPktLine() []byte {
 	}
 	if c.EndOfPushOptions {
 		return FlushPacket{}.EncodeToPktLine()
+	}
+	if c.StartOfPushCert {
+		return BytesPacket([]byte(fmt.Sprintf("push-cert\x00%s\n", strings.Join(c.Capabilities, " ")))).EncodeToPktLine()
+	}
+	if c.PushCertHeader {
+		return BytesPacket([]byte("certificate version 0.1\n")).EncodeToPktLine()
+	}
+	if c.Pusher != "" {
+		return BytesPacket([]byte(fmt.Sprintf("pusher %s\n", c.Pusher))).EncodeToPktLine()
+	}
+	if c.Pushee != "" {
+		return BytesPacket([]byte(fmt.Sprintf("pushee %s\n", c.Pushee))).EncodeToPktLine()
+	}
+	if c.Nonce != "" {
+		return BytesPacket([]byte(fmt.Sprintf("nonce %s\n", c.Nonce))).EncodeToPktLine()
+	}
+	if c.CertPushOption != "" {
+		return BytesPacket([]byte(fmt.Sprintf("push-option %s\n", c.CertPushOption))).EncodeToPktLine()
+	}
+	if c.EndOfCertPushOptions {
+		return BytesPacket([]byte("\n")).EncodeToPktLine()
+	}
+	if len(c.GPGSignaturePart) != 0 {
+		return BytesPacket(c.GPGSignaturePart).EncodeToPktLine()
+	}
+	if c.EndOfPushCert {
+		return BytesPacket([]byte("push-cert-end\n")).EncodeToPktLine()
 	}
 	// TODO
 	if len(c.PackStream) != 0 {
@@ -154,7 +181,7 @@ transition:
 			}
 			return true
 		}
-		if bytes.HasPrefix(bp, []byte("push-cert ")) {
+		if bytes.HasPrefix(bp, []byte("push-cert\x00")) {
 			r.state = protocolV1ReceivePackRequestStateScanCert
 			goto transition
 		}
@@ -214,13 +241,170 @@ transition:
 			return false
 		}
 	case protocolV1ReceivePackRequestStateScanCert:
+		bp, ok := pkt.(BytesPacket)
+		if !ok {
+			r.err = SyntaxError(fmt.Sprintf("unexpected packet: %#v", pkt))
+			return false
+		}
+		zss := bytes.SplitN(bp, []byte{0}, 2)
+		if len(zss) != 2 {
+			r.err = SyntaxError("cannot split into two: " + string(bp))
+			return false
+		}
+		caps := []string{}
+		if capStr := strings.TrimPrefix(strings.TrimSuffix(string(zss[1]), "\n"), " "); capStr != "" {
+			// This is to avoid strings.Split("", " ") => []string{""}.
+			caps = strings.Split(capStr, " ")
+		}
+		r.state = protocolV1ReceivePackRequestStateScanCertVersion
+		r.curr = &ProtocolV1ReceivePackRequestChunk{
+			Capabilities:    caps,
+			StartOfPushCert: true,
+		}
+		return true
 	case protocolV1ReceivePackRequestStateScanCertVersion:
+		bp, ok := pkt.(BytesPacket)
+		if !ok {
+			r.err = SyntaxError(fmt.Sprintf("unexpected packet: %#v", pkt))
+			return false
+		}
+		if string(bp) != "certificate version 0.1\n" {
+			r.err = SyntaxError(fmt.Sprintf("unexpected certificate version: %#q", string(bp)))
+			return false
+		}
+		r.state = protocolV1ReceivePackRequestStateScanCertPusher
+		r.curr = &ProtocolV1ReceivePackRequestChunk{
+			PushCertHeader: true,
+		}
+		return true
 	case protocolV1ReceivePackRequestStateScanCertPusher:
-	case protocolV1ReceivePackRequestStateScanCertPushee:
+		bp, ok := pkt.(BytesPacket)
+		if !ok {
+			r.err = SyntaxError(fmt.Sprintf("unexpected packet: %#v", pkt))
+			return false
+		}
+		ss := strings.SplitN(strings.TrimSuffix(string(bp), "\n"), " ", 2)
+		if len(ss) != 2 {
+			r.err = SyntaxError("cannot split into two: " + string(bp))
+			return false
+		}
+		if ss[0] != "pusher" {
+			r.err = SyntaxError(fmt.Sprintf("unexpected packet: %#v", string(bp)))
+			return false
+		}
+		r.state = protocolV1ReceivePackRequestStateScanCertPusheeOrNonce
+		r.curr = &ProtocolV1ReceivePackRequestChunk{
+			Pusher: ss[1],
+		}
+		return true
+	case protocolV1ReceivePackRequestStateScanCertPusheeOrNonce:
+		bp, ok := pkt.(BytesPacket)
+		if !ok {
+			r.err = SyntaxError(fmt.Sprintf("unexpected packet: %#v", pkt))
+			return false
+		}
+		ss := strings.SplitN(strings.TrimSuffix(string(bp), "\n"), " ", 2)
+		if len(ss) != 2 {
+			r.err = SyntaxError("cannot split into two: " + string(bp))
+			return false
+		}
+		if ss[0] == "nonce" {
+			r.state = protocolV1ReceivePackRequestStateScanCertNonce
+			goto transition
+		}
+		if ss[0] != "pushee" {
+			r.err = SyntaxError(fmt.Sprintf("unexpected packet: %#v", string(bp)))
+			return false
+		}
+		r.state = protocolV1ReceivePackRequestStateScanCertNonce
+		r.curr = &ProtocolV1ReceivePackRequestChunk{
+			Pushee: ss[1],
+		}
+		return true
 	case protocolV1ReceivePackRequestStateScanCertNonce:
+		bp, ok := pkt.(BytesPacket)
+		if !ok {
+			r.err = SyntaxError(fmt.Sprintf("unexpected packet: %#v", pkt))
+			return false
+		}
+		ss := strings.SplitN(strings.TrimSuffix(string(bp), "\n"), " ", 2)
+		if len(ss) != 2 {
+			r.err = SyntaxError("cannot split into two: " + string(bp))
+			return false
+		}
+		if ss[0] != "nonce" {
+			r.err = SyntaxError(fmt.Sprintf("unexpected packet: %#v", string(bp)))
+			return false
+		}
+		r.state = protocolV1ReceivePackRequestStateScanOptionalCertPushOptions
+		r.curr = &ProtocolV1ReceivePackRequestChunk{
+			Nonce: ss[1],
+		}
+		return true
 	case protocolV1ReceivePackRequestStateScanOptionalCertPushOptions:
+		bp, ok := pkt.(BytesPacket)
+		if !ok {
+			r.err = SyntaxError(fmt.Sprintf("unexpected packet: %#v", pkt))
+			return false
+		}
+		if string(bp) == "\n" {
+			r.state = protocolV1ReceivePackRequestStateScanCertCommand
+			r.curr = &ProtocolV1ReceivePackRequestChunk{
+				EndOfCertPushOptions: true,
+			}
+			return true
+		}
+		ss := strings.SplitN(strings.TrimSuffix(string(bp), "\n"), " ", 2)
+		if len(ss) != 2 {
+			r.err = SyntaxError("cannot split into two: " + string(bp))
+			return false
+		}
+		if ss[0] != "push-option" {
+			r.err = SyntaxError(fmt.Sprintf("unexpected packet: %#v", string(bp)))
+			return false
+		}
+		r.curr = &ProtocolV1ReceivePackRequestChunk{
+			CertPushOption: ss[1],
+		}
+		return true
 	case protocolV1ReceivePackRequestStateScanCertCommand:
+		bp, ok := pkt.(BytesPacket)
+		if !ok {
+			r.err = SyntaxError(fmt.Sprintf("unexpected packet: %#v", pkt))
+			return false
+		}
+		if string(bp) == "-----BEGIN PGP SIGNATURE-----\n" {
+			r.state = protocolV1ReceivePackRequestStateScanCertGPGLine
+			goto transition
+		}
+		ss := strings.SplitN(strings.TrimSuffix(string(bp), "\n"), " ", 3)
+		if len(ss) != 3 {
+			r.err = SyntaxError("cannot split into three: " + string(bp))
+			return false
+		}
+		r.curr = &ProtocolV1ReceivePackRequestChunk{
+			OldObjectID: ss[0],
+			NewObjectID: ss[1],
+			RefName:     ss[2],
+		}
+		return true
 	case protocolV1ReceivePackRequestStateScanCertGPGLine:
+		bp, ok := pkt.(BytesPacket)
+		if !ok {
+			r.err = SyntaxError(fmt.Sprintf("unexpected packet: %#v", pkt))
+			return false
+		}
+		if string(bp) == "push-cert-end\n" {
+			r.state = protocolV1ReceivePackRequestStateScanPushOptions
+			r.curr = &ProtocolV1ReceivePackRequestChunk{
+				EndOfPushCert: true,
+			}
+			return true
+		}
+		r.curr = &ProtocolV1ReceivePackRequestChunk{
+			GPGSignaturePart: bp,
+		}
+		return true
 	case protocolV1ReceivePackRequestStateScanOptionalPushOptions:
 		if _, ok := pkt.(PackFileIndicatorPacket); ok {
 			r.state = protocolV1ReceivePackRequestStateScanPackFile

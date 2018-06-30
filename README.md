@@ -28,13 +28,6 @@ makes sure a client won't process an incomplete response thinking it's complete.
 
 ## TODOs
 
-*    Signed push is not implemented and tested.
-
-     There was a bug in upstream Git around singed push, and in order to get
-     this work, git needs to be built from the source. As of 2018-06-21, the fix
-     is in pu. Add bin-wrappers to the PATH to use the latest binary in the
-     end-to-end tests.
-
 *    Protocol semantics is not defined.
 
      The syntax is relatively complete. The semantics is not even mentioned. One

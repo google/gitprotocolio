@@ -166,7 +166,7 @@ COMMAND                ::= OID_STR SP OID_STR SP REF_NAME
 PUSH_CERT              ::= BytesPacket("push-cert" NUL SP? CAPABILITIY_LIST? LF)
                            BytesPacket("certificate version 0.1" LF)
                            BytesPacket("pusher" SP ANY_STR LF)
-                           BytesPacket("pushee" SP ANY_STR LF)
+                           (BytesPacket("pushee" SP ANY_STR LF))?
                            BytesPacket("nonce" SP ANY_STR LF)
                            BytesPacket("push-option" SP ANY_STR LF)*
                            BytesPacket(LF)
@@ -211,3 +211,8 @@ will get rid of this.
 
 When a client pushes a push certificate, it sends the push options twice. We
 have no idea what's going on.
+
+### Is push cert's pushee optional?
+
+This can be a bug. Looking at builtin/send-pack.c, args.url is not set for this
+path always.
